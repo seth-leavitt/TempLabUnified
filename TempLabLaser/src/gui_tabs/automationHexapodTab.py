@@ -17,6 +17,15 @@ class HexapodAutomationTab:
         self.stepCount = tk.IntVar(value=20)  # Default step count
         self.hexapodCenter = tk.StringVar(value="0")  # Default center position
         self.pumpLaser = tk.StringVar(value="0")  # Default pump laser state
+        self.state_poll_inflight = False
+        self.latest_pose = {
+            'X': 0.0,
+            'Y': 0.0,
+            'Z': 0.0,
+            'Roll (Rx)': 0.0,
+            'Pitch (Ry)': 0.0,
+            'Yaw (Rz)': 0.0,
+        }
         self.setup_ui()
 
 
@@ -51,7 +60,7 @@ class HexapodAutomationTab:
         meters_frame.grid(row=0, column=0, columnspan=6, padx=5, pady=5)
 
         # Define coordinate systems with their ranges
-        coordinates = {
+        self.coordinates = {
             'X': {'name': 'X Position', 'range': (-30, 30)},  # ±50mm
             'Y': {'name': 'Y Position', 'range': (-30, 30)},  # ±50mm
             'Z': {'name': 'Z Position', 'range': (-20, 20)},  # ±25mm
@@ -62,7 +71,7 @@ class HexapodAutomationTab:
 
         self.constraint_meters = {}
 
-        for i, (coord, info) in enumerate(coordinates.items()):
+        for i, (coord, info) in enumerate(self.coordinates.items()):
             # Create frame for each meter
             meter_frame = ttk.LabelFrame(meters_frame, text=info['name'])
             meter_frame.grid(row=i//3, column=i%3, padx=5, pady=5)
@@ -72,19 +81,23 @@ class HexapodAutomationTab:
                 meter_frame,
                 metersize=150,
                 padding=5,
-                amountused=50,  # Start at middle position
+                amountused=0,
+                amounttotal=100,
                 metertype="full",  # Full circle display
-                subtext=f"Range: {info['range'][0]} to {info['range'][1]}",
+                subtext=f"+{info['range'][1]:.1f} / {info['range'][0]:.1f}",
                 interactive=False,
                 stripethickness=10
             )
             meter.pack(padx=5, pady=5)
+            meter.configure(amountused=0)
 
             # Store meter reference
             self.constraint_meters[coord] = {
                 'meter': meter,
                 'range': info['range']
             }
+
+        self._apply_pose_to_meters()
 
         # Method to update meter values
 
@@ -220,28 +233,54 @@ class HexapodAutomationTab:
         for frame in (status_frame, movement_frame, output_frame):
             frame.grid_columnconfigure(1, weight=1)
 
-    def update_meter_value(self, coordinate, pos_constraint, neg_constraint):
-        """
-        Update meter to show constraints in both positive and negative directions
+    def update_meter_value(self, coordinate, current_value):
+        """Update one dial to show remaining positive/negative travel."""
+        meter_info = self.constraint_meters[coordinate]
+        meter = meter_info['meter']
+        min_limit, max_limit = meter_info['range']
 
-        Args:
-            coordinate: The coordinate to update ('X', 'Y', etc.)
-            pos_constraint: Constraint in positive direction (0-100%)
-            neg_constraint: Constraint in negative direction (0-100%)
-        """
-        meter = self.constraint_meters[coordinate]['meter']
-        total_range = abs(self.constraint_meters[coordinate]['range'][1] -
-                          self.constraint_meters[coordinate]['range'][0])
+        value = max(min_limit, min(max_limit, float(current_value)))
+        remaining_pos = max(0.0, max_limit - value)
+        remaining_neg = max(0.0, value - min_limit)
 
-        # Calculate the amount used based on constraints
-        pos_amount = (100 - pos_constraint) * (total_range / 2) / 100
-        neg_amount = (100 - neg_constraint) * (total_range / 2) / 100
+        span = max_limit - min_limit
+        center = (max_limit + min_limit) / 2.0
+        usage_pct = (abs(value - center) / (span / 2.0)) * 100.0 if span > 0 else 0.0
 
-        # Update meter display
         meter.configure(
-            amountused=(pos_amount + neg_amount) / total_range * 100,
-            sublabel=f"+{pos_amount:.1f}/-{neg_amount:.1f}"
+            amountused=max(0.0, min(100.0, usage_pct)),
+            subtext=f"+{remaining_pos:.2f} / -{remaining_neg:.2f}"
         )
+
+    def _apply_pose_to_meters(self):
+        for coordinate, value in self.latest_pose.items():
+            if coordinate in self.constraint_meters:
+                self.update_meter_value(coordinate, value)
+
+    def _refresh_pose_from_hexapod(self):
+        """Poll state in background and update dials on the GUI thread."""
+        try:
+            if self.hexapod is None:
+                return
+            self.hexapod.getState()
+            status = self.hexapod.status_dict or {}
+            pose = {
+                'X': float(status.get('s_mtp_tx', status.get('s_uto_tx', self.latest_pose['X']))),
+                'Y': float(status.get('s_mtp_ty', status.get('s_uto_ty', self.latest_pose['Y']))),
+                'Z': float(status.get('s_mtp_tz', status.get('s_uto_tz', self.latest_pose['Z']))),
+                'Roll (Rx)': float(status.get('s_mtp_rx', status.get('s_uto_rx', self.latest_pose['Roll (Rx)']))),
+                'Pitch (Ry)': float(status.get('s_mtp_ry', status.get('s_uto_ry', self.latest_pose['Pitch (Ry)']))),
+                'Yaw (Rz)': float(status.get('s_mtp_rz', status.get('s_uto_rz', self.latest_pose['Yaw (Rz)']))),
+            }
+            self.parent.after(0, lambda: self._set_latest_pose(pose))
+        except Exception:
+            pass
+        finally:
+            self.parent.after(0, lambda: setattr(self, 'state_poll_inflight', False))
+
+    def _set_latest_pose(self, pose):
+        self.latest_pose.update(pose)
+        self._apply_pose_to_meters()
 
     def print_hexapod_state(self):
         def actually_print():
@@ -280,8 +319,11 @@ class HexapodAutomationTab:
                     text=f"Hexapod Ready for New Commands: {self.hexapod.ready_for_commands}",
                     fg="green" if self.hexapod.ready_for_commands else "red"
                 )
+                if not self.state_poll_inflight:
+                    self.state_poll_inflight = True
+                    threading.Thread(target=self._refresh_pose_from_hexapod, daemon=True).start()
             except Exception as e:
                 self.hexapodStatusLabel.config(text=f"Error: {e}")
 
-        # update the label every 100 milliseconds
-        self.hexapodStatusLabel.after(100, self.update_hexapod_status)
+        # update status and meters on a moderate cadence.
+        self.hexapodStatusLabel.after(250, self.update_hexapod_status)
