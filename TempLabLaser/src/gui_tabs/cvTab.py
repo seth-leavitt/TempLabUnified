@@ -221,7 +221,9 @@ class CVTab:
         while not self.capture_stop_event.is_set():
             try:
                 frame = self.cv_manager.capture_image()
-            except Exception:
+            except Exception as exc:
+                if not self.capture_stop_event.is_set():
+                    self.parent.after(0, lambda: self._set_status(f"Capture worker stopped: {exc}"))
                 break
 
             try:
@@ -266,12 +268,12 @@ class CVTab:
         if not self.viewport_running:
             return
 
+        newest_frame = None
         try:
-            newest_frame = None
             while True:
                 newest_frame = self.frame_queue.get_nowait()
         except queue.Empty:
-            newest_frame = None
+            pass
         except Exception as exc:
             self._set_status(f"Viewport update failed: {exc}")
             self.stop_viewport()
