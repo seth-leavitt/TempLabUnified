@@ -121,6 +121,12 @@ class CVManager:
     def find_distance(self):
         """Detect red/green laser spots and return pixel-space distance."""
         image = self.capture_image()
+        return self.find_distance_from_frame(image)
+
+    def find_distance_from_frame(self, image):
+        """Detect red/green laser spots from a provided BGR frame."""
+        if image is None:
+            return 0
         self.green_laser.image = image
         self.red_laser.image = image
 

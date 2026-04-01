@@ -1,4 +1,6 @@
 import os
+import queue
+import threading
 import tkinter as tk
 from datetime import datetime
 
@@ -24,11 +26,13 @@ class CVTab:
         self.viewport_running = False
         self.viewport_job = None
         self.target_interval_ms = 33
+        self.capture_thread = None
+        self.capture_stop_event = threading.Event()
+        self.frame_queue = queue.Queue(maxsize=2)
 
         # Cached image objects to avoid garbage collection and redundant conversions.
         self.current_image = None
         self.last_frame = None
-        self.last_rendered_size = None
 
         # Window/UI object references populated when camera window is created.
         self.camera_window = None
@@ -168,7 +172,12 @@ class CVTab:
         self.camera_window = None
         self.viewport_label = None
         self.status_label = None
-        self.last_rendered_size = None
+        self.capture_thread = None
+        while not self.frame_queue.empty():
+            try:
+                self.frame_queue.get_nowait()
+            except queue.Empty:
+                break
 
     def apply_exposure(self):
         """Apply operator-entered exposure value in microseconds."""
@@ -207,6 +216,26 @@ class CVTab:
         if self.last_frame is not None:
             self._update_viewport(self.last_frame)
 
+    def _capture_worker(self):
+        """Continuously capture frames and keep only the newest ones."""
+        while not self.capture_stop_event.is_set():
+            try:
+                frame = self.cv_manager.capture_image()
+            except Exception:
+                break
+
+            try:
+                self.frame_queue.put_nowait(frame)
+            except queue.Full:
+                try:
+                    self.frame_queue.get_nowait()
+                except queue.Empty:
+                    pass
+                try:
+                    self.frame_queue.put_nowait(frame)
+                except queue.Full:
+                    pass
+
     def _update_viewport(self, frame):
         """Convert BGR frame to Tk image and display with lightweight scaling."""
         if frame is None or self.viewport_label is None:
@@ -238,9 +267,20 @@ class CVTab:
             return
 
         try:
-            frame = self.cv_manager.capture_image()
-            self.last_frame = frame
-            self._update_viewport(frame)
+            newest_frame = None
+            while True:
+                newest_frame = self.frame_queue.get_nowait()
+        except queue.Empty:
+            newest_frame = None
+        except Exception as exc:
+            self._set_status(f"Viewport update failed: {exc}")
+            self.stop_viewport()
+            return
+
+        try:
+            if newest_frame is not None:
+                self.last_frame = newest_frame
+                self._update_viewport(newest_frame)
         except Exception as exc:
             self._set_status(f"Viewport update failed: {exc}")
             self.stop_viewport()
@@ -263,6 +303,11 @@ class CVTab:
             if self.stop_viewport_btn is not None:
                 self.stop_viewport_btn.config(state=tk.NORMAL)
             self._set_status("Viewport started")
+
+            self.capture_stop_event.clear()
+            self.capture_thread = threading.Thread(target=self._capture_worker, daemon=True)
+            self.capture_thread.start()
+
             self._viewport_tick()
         except Exception as exc:
             self._set_status(f"Viewport start failed: {exc}")
@@ -277,6 +322,18 @@ class CVTab:
             self.start_viewport_btn.config(state=tk.NORMAL)
         if self.stop_viewport_btn is not None:
             self.stop_viewport_btn.config(state=tk.DISABLED)
+
+        self.capture_stop_event.set()
+        if self.capture_thread is not None and self.capture_thread.is_alive():
+            self.capture_thread.join(timeout=1.0)
+        self.capture_thread = None
+
+        while not self.frame_queue.empty():
+            try:
+                self.frame_queue.get_nowait()
+            except queue.Empty:
+                break
+
         if close_stream:
             self.cv_manager.close_camera_stream()
         self._set_status("Viewport stopped")
@@ -300,7 +357,10 @@ class CVTab:
     def find_distance(self):
         """Run laser detection and log the measured pixel distance."""
         try:
-            distance = self.cv_manager.find_distance()
+            if self.last_frame is None:
+                self._set_status("Distance calc failed: no frame available")
+                return
+            distance = self.cv_manager.find_distance_from_frame(self.last_frame)
             self._set_status(f"Detected laser distance: {distance}")
         except Exception as exc:
             self._set_status(f"Distance calc failed: {exc}")
