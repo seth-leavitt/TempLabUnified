@@ -1,5 +1,6 @@
 import tkinter as tk
 import tkinter.filedialog
+from tkinter import filedialog
 
 import pandas
 import pandas as pd
@@ -20,9 +21,13 @@ SAMPLE_OPTIONS_PATH = os.path.join(PROJECT_ROOT, "res", "Sample Options.csv")
 
 class AutomationTab:
     def __init__(self, parent, instruments, main_gui):
+        # GraphBox owns the plotting process used during automation.
         self.graph = GraphBox(1,"Default")
         self.parent = parent
         self.instruments = instruments
+        # Reuse the multiprocessing manager created by the top-level GUI.
+        self.manager = main_gui.manager
+        self._automation_graph_photo = None
         self.setup_ui()
 
     def setup_ui(self):
@@ -149,8 +154,14 @@ class AutomationTab:
         self.fileStorageLabel.grid(row=3, column=2, columnspan=2, padx=10, pady=10)
         self.fileStorageButton.grid(row=3, column=0, padx=10, pady=10)
 
-        sample_options_df = pd.read_csv(SAMPLE_OPTIONS_PATH)
-        sample_options = [x["Sample Name"] for x in sample_options_df.to_dict(orient="records")]
+        # Load sample names once for the dropdown; fallback keeps startup resilient.
+        try:
+            sample_options_df = pd.read_csv(SAMPLE_OPTIONS_PATH)
+            sample_options = [x["Sample Name"] for x in sample_options_df.to_dict(orient="records")]
+            if not sample_options:
+                sample_options = ["NONE"]
+        except Exception:
+            sample_options = ["NONE"]
         self.sample_selector_var = tk.StringVar(output_frame, sample_options[0])
         self.sample_selector = tk.OptionMenu(output_frame, self.sample_selector_var, *sample_options)
         self.sample_selector.grid(row=2, column=3, padx=10, pady=10)
@@ -175,10 +186,22 @@ class AutomationTab:
         canvas.bind_all("<MouseWheel>", _on_mousewheel)
 
     def generate_readme(self):
+        # Manual README path keeps existing operator prompt workflow.
         readme_generator = READMEGenerator()
         readme_generator.extra_info_pop_up(self)
 
+    def generate_readme_automated(self, filepath):
+        """Generate README during automated runs without prompting the operator."""
+        readme_generator = READMEGenerator()
+        try:
+            readme_generator.update_info(self, os.environ.get("USER", "Automated Operator"), "10")
+            readme_generator.generate_readme(filepath)
+            self.automationTxtBx.insert(tk.END, f"README generated: {os.path.join(filepath, 'README.txt')}\n")
+        except Exception as exc:
+            self.automationTxtBx.insert(tk.END, f"README generation failed: {exc}\n")
+
     def begin_automation(self, begin = False):
+        # Build a unique output directory for this run before measurement starts.
         print("Producing Correct File Organization...")
         def create_directory_structure(base_path, sample_name):
             if sample_name != "NONE":
@@ -242,6 +265,9 @@ class AutomationTab:
         self.automationTxtBx.insert('1.0', f"Starting Automation...\n")
         self.automationTxtBx.insert('1.0', f"Time Step: {timeStep}s\n")
         self.automationTxtBx.insert('1.0', f"Step Count: {stepCount}\n")
+
+        # Automatically write metadata as soon as run parameters are known.
+        self.generate_readme_automated(filepath)
         
         if begin == True:
             threading.Thread(target=self.instruments.automatic_measuring, 
@@ -307,7 +333,7 @@ class AutomationTab:
         self.instruments.automation_status = None
 
     def select_file_location(self):
-        filePath = tk.filedialog.askdirectory()
+        filePath = filedialog.askdirectory()
         if filePath == "":
             self.startMeasurements["state"] = "disabled"
             return
@@ -322,7 +348,8 @@ class AutomationTab:
             image = image.resize((800, 400), Image.Resampling.LANCZOS)
             photo = ImageTk.PhotoImage(image)
             self.automationGraph.configure(image=photo)
-            self.automationGraph.image = photo  # Keep reference
+            # Keep reference to avoid Tk image garbage collection.
+            self._automation_graph_photo = photo
             print("Graph display updated")
 
     def update_automation_textbox(self, values):
@@ -339,10 +366,8 @@ class AutomationTab:
 
     def schedule_automation_update(self):
         if not self.instruments.automationQueue.empty():
-            print("Automation queue not empty")
             try:
                 dataFrame = self.instruments.automationQueue.get()
-                print(f"Received new data frame with shape: {dataFrame.shape}")
 
                 # Update text display
                 self.update_automation_textbox(dataFrame)
@@ -351,7 +376,6 @@ class AutomationTab:
                 pickle_loc = self.graph.PICKLE_FILE_LOCATION +"_"+self.spacing_selector_var.get() +".pickle"
                 pd.to_pickle(dataFrame, pickle_loc)
                 self.graph.data_queue.put_nowait(pickle_loc)
-                print("Sent new data to plotting process")
 
             except queue.Empty:
                 pass
@@ -370,6 +394,8 @@ class AutomationTab:
         self.automationTxtBx.after(100, self.schedule_automation_update)
 
 class READMEGenerator:
+    """Collects and writes measurement metadata into README.txt files."""
+
     def __init__(self):
         self.operator = "NA"
         self.sample_id = "NA"
@@ -417,16 +443,21 @@ class READMEGenerator:
             self.generate_readme(parent.fileStorageLocation.get())
         build_UI(self)
         
-    def update_info(self, parent):
+    def update_info(self, parent, operator=None, photodiode_gain=None):
+        """Populate metadata from the automation tab and optional operator input."""
         laser_gui = parent
-        print(laser_gui)
+        if operator is not None:
+            self.operator = str(operator)
+        if photodiode_gain is not None:
+            self.photodiode_gain = str(photodiode_gain)
+
         sample_record = pd.read_csv(SAMPLE_OPTIONS_PATH)
         self.sample_id = laser_gui.sample_selector_var.get()
         sample_info = sample_record.loc[sample_record["Sample Name"] == self.sample_id]
-        print(sample_info)
-        self.sample_gold_thickness = sample_info["Gold Thickness"].values[0]
-        self.sample_vendor = sample_info["Vendor"].values[0]
-        self.sample_notes = sample_info["Details"].values[0]
+        if not sample_info.empty:
+            self.sample_gold_thickness = sample_info["Gold Thickness"].values[0]
+            self.sample_vendor = sample_info["Vendor"].values[0]
+            self.sample_notes = sample_info["Details"].values[0]
         self.beam_offset = laser_gui.distanceInput.get()
         self.beam_angle = laser_gui.angleInput.get()
         self.green_center = "Computer Vision not implemented"
@@ -435,8 +466,17 @@ class READMEGenerator:
         self.lowest_freq = laser_gui.freqInitialInput.get()
         self.highest_freq = laser_gui.freqFinalInput.get()
         self.freq_mode = laser_gui.spacing_selector_var.get()
-        self.lia_time_constant = str(laser_gui.instruments.lia.query("OFLT?"))
-        self.lia_sensitivity = str(laser_gui.instruments.lia.query("SENS?"))
+        lia = getattr(laser_gui.instruments, "lia", None)
+        if lia is not None:
+            try:
+                self.lia_time_constant = str(lia.query("OFLT?"))
+                self.lia_sensitivity = str(lia.query("SENS?"))
+            except Exception:
+                self.lia_time_constant = "Unavailable"
+                self.lia_sensitivity = "Unavailable"
+        else:
+            self.lia_time_constant = "Unavailable"
+            self.lia_sensitivity = "Unavailable"
         self.save_path = laser_gui.fileStorageLocation.get()
 
     def generate_readme(self, file_location):

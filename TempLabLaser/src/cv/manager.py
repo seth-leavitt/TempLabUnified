@@ -12,15 +12,26 @@ except Exception:
 
 
 class CVManager:
+    """Camera and laser-detection manager shared by the GUI camera tab.
+
+    This class keeps camera stream lifecycle, frame acquisition, and laser
+    distance estimation in one place so the UI layer stays lightweight.
+    """
+
     def __init__(self):
+        # Color references used by the laser detector instances.
         self.green = np.array([[[0, 255, 0]]], dtype=np.uint8)
         self.red = np.array([[[0, 0, 255]]], dtype=np.uint8)
         self.green_laser = LaserDetector(self.green)
         self.red_laser = LaserDetector(self.red)
+
+        # Camera SDK objects are populated lazily when connection starts.
         self.device_manager: Optional[Any] = None
         self.camera_stream: Optional[Any] = None
+        self.exposure_us = 100000
 
     def initialize_camera_stream(self):
+        """Open the first available camera and enable continuous acquisition."""
         if self.camera_stream is not None:
             return
         if gxipy is None:
@@ -36,11 +47,22 @@ class CVManager:
             raise RuntimeError("Unable to open camera device")
 
         camera.TriggerMode.set(False)
-        camera.ExposureTime.set(100000)
+        camera.ExposureTime.set(self.exposure_us)
         camera.stream_on()
         self.camera_stream = camera
 
+    def set_exposure(self, exposure_us):
+        """Set camera exposure in microseconds and apply immediately if connected."""
+        exposure = int(float(exposure_us))
+        if exposure <= 0:
+            raise ValueError("Exposure must be a positive number of microseconds")
+
+        self.exposure_us = exposure
+        if self.camera_stream is not None:
+            self.camera_stream.ExposureTime.set(self.exposure_us)
+
     def close_camera_stream(self):
+        """Stop and close the active camera stream safely."""
         cam = self.camera_stream
         self.camera_stream = None
         if cam is None:
@@ -55,6 +77,7 @@ class CVManager:
             pass
 
     def rawimage_to_cv2(self, raw_img):
+        """Convert gxipy frame objects into OpenCV-friendly numpy arrays."""
         if raw_img is None:
             return None
 
@@ -64,24 +87,17 @@ class CVManager:
                 arr = cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
             return arr
 
-        if gxipy is None:
-            raise RuntimeError("gxipy is not installed; camera stream is unavailable")
-
-        converter = gxipy.ImageFormatConvert()
-        try:
-            converter.output_pixel_format = gxipy.GxPixelFormatEntry.RGB8
-        except Exception:
-            pass
-
-        rgb_img = converter.convert(raw_img)
-        if hasattr(rgb_img, "get_numpy_array"):
-            arr = rgb_img.get_numpy_array()
-            if isinstance(arr, np.ndarray) and arr.ndim == 3 and arr.shape[2] == 3:
-                arr = cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
-            return arr
-        raise TypeError(f"Unsupported gxipy image type: {type(raw_img)}")
+        raise TypeError(
+            "Unsupported gxipy image object; expected get_numpy_array() support "
+            f"but got {type(raw_img)}"
+        )
 
     def capture_image(self):
+        """Capture one frame and update detector input images.
+
+        The SDK can provide either Bayer mono frames or 3-channel frames,
+        so conversion is conditional to avoid unnecessary work.
+        """
         if self.camera_stream is None:
             self.initialize_camera_stream()
         if self.camera_stream is None:
@@ -91,15 +107,22 @@ class CVManager:
         image = self.rawimage_to_cv2(image)
         if image is None:
             raise RuntimeError("Failed to read camera frame")
-        rgb = cv2.cvtColor(image, cv2.COLOR_BAYER_RG2RGB)
-        self.green_laser.image = rgb.copy()
-        self.red_laser.image = rgb.copy()
-        return rgb
+        if len(image.shape) == 2:
+            frame_bgr = cv2.cvtColor(image, cv2.COLOR_BAYER_RG2BGR)
+        elif len(image.shape) == 3 and image.shape[2] == 3:
+            frame_bgr = image
+        else:
+            raise RuntimeError(f"Unsupported frame shape from camera: {image.shape}")
+
+        self.green_laser.image = frame_bgr
+        self.red_laser.image = frame_bgr
+        return frame_bgr
 
     def find_distance(self):
+        """Detect red/green laser spots and return pixel-space distance."""
         image = self.capture_image()
-        self.green_laser.image = image.copy()
-        self.red_laser.image = image.copy()
+        self.green_laser.image = image
+        self.red_laser.image = image
 
         green = self.green_laser.detect(0)
         red = self.red_laser.detect(0)
