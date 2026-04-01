@@ -1,4 +1,4 @@
-import traceback
+from typing import Any, Optional
 
 import cv2
 import numpy as np
@@ -9,7 +9,6 @@ try:
     import gxipy
 except Exception:
     gxipy = None
-    traceback.print_exc()
 
 
 class CVManager:
@@ -18,8 +17,8 @@ class CVManager:
         self.red = np.array([[[0, 0, 255]]], dtype=np.uint8)
         self.green_laser = LaserDetector(self.green)
         self.red_laser = LaserDetector(self.red)
-        self.device_manager = None
-        self.camera_stream = None
+        self.device_manager: Optional[Any] = None
+        self.camera_stream: Optional[Any] = None
 
     def initialize_camera_stream(self):
         if self.camera_stream is not None:
@@ -32,10 +31,14 @@ class CVManager:
         if device_num == 0:
             raise RuntimeError("No camera device found")
 
-        self.camera_stream = self.device_manager.open_device_by_index(1)
-        self.camera_stream.TriggerMode.set(False)
-        self.camera_stream.ExposureTime.set(100000)
-        self.camera_stream.stream_on()
+        camera = self.device_manager.open_device_by_index(1)
+        if camera is None:
+            raise RuntimeError("Unable to open camera device")
+
+        camera.TriggerMode.set(False)
+        camera.ExposureTime.set(100000)
+        camera.stream_on()
+        self.camera_stream = camera
 
     def close_camera_stream(self):
         cam = self.camera_stream
@@ -61,6 +64,9 @@ class CVManager:
                 arr = cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
             return arr
 
+        if gxipy is None:
+            raise RuntimeError("gxipy is not installed; camera stream is unavailable")
+
         converter = gxipy.ImageFormatConvert()
         try:
             converter.output_pixel_format = gxipy.GxPixelFormatEntry.RGB8
@@ -78,9 +84,13 @@ class CVManager:
     def capture_image(self):
         if self.camera_stream is None:
             self.initialize_camera_stream()
+        if self.camera_stream is None:
+            raise RuntimeError("Camera stream is not initialized")
 
         image = self.camera_stream.data_stream[0].get_image()
         image = self.rawimage_to_cv2(image)
+        if image is None:
+            raise RuntimeError("Failed to read camera frame")
         rgb = cv2.cvtColor(image, cv2.COLOR_BAYER_RG2RGB)
         self.green_laser.image = rgb.copy()
         self.red_laser.image = rgb.copy()

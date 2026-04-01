@@ -14,6 +14,10 @@ import time
 from tkinter import ttk
 
 
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+SAMPLE_OPTIONS_PATH = os.path.join(PROJECT_ROOT, "res", "Sample Options.csv")
+
+
 class AutomationTab:
     def __init__(self, parent, instruments, main_gui):
         self.graph = GraphBox(1,"Default")
@@ -145,7 +149,8 @@ class AutomationTab:
         self.fileStorageLabel.grid(row=3, column=2, columnspan=2, padx=10, pady=10)
         self.fileStorageButton.grid(row=3, column=0, padx=10, pady=10)
 
-        sample_options = [x["Sample Name"] for x in pd.read_csv(os.path.join("res", "Sample Options.csv")).to_dict(orient="records")]
+        sample_options_df = pd.read_csv(SAMPLE_OPTIONS_PATH)
+        sample_options = [x["Sample Name"] for x in sample_options_df.to_dict(orient="records")]
         self.sample_selector_var = tk.StringVar(output_frame, sample_options[0])
         self.sample_selector = tk.OptionMenu(output_frame, self.sample_selector_var, *sample_options)
         self.sample_selector.grid(row=2, column=3, padx=10, pady=10)
@@ -415,7 +420,7 @@ class READMEGenerator:
     def update_info(self, parent):
         laser_gui = parent
         print(laser_gui)
-        sample_record = pd.read_csv(os.path.join("res", "Sample Options.csv"))
+        sample_record = pd.read_csv(SAMPLE_OPTIONS_PATH)
         self.sample_id = laser_gui.sample_selector_var.get()
         sample_info = sample_record.loc[sample_record["Sample Name"] == self.sample_id]
         print(sample_info)

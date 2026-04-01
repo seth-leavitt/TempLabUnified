@@ -11,7 +11,9 @@ from src.instrument_configurations.fgConfig import fgConfig
 
 
 class InstrumentsTab:
-    CONFIG_FILE = os.path.join(os.path.dirname(__file__), "src\instrument_configurations\configs.json")
+    CONFIG_FILE = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "..", "instrument_configurations", "configs.json")
+    )
     
 
     def __init__(self, parent, instruments):
