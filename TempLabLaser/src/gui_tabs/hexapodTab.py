@@ -14,6 +14,7 @@ class HexapodTab:
         self.translation_position = {"up": 0.0, "left": 0.0, "out": 0.0}
         self.remaining_labels = {}
         self.remaining_bars = {}
+        self.hardware_poll_job = None
         self.setup_ui()
         self.hexapod = None
 
@@ -88,6 +89,8 @@ class HexapodTab:
             self.hexapod = HexapodControl()
             self.hexapodTextbox.insert(tk.END, "Connected to hexapod.\n")
             self._reset_translation_estimate()
+            self._sync_translation_from_hardware()
+            self._schedule_hardware_poll()
         except Exception as e:
             self.hexapodTextbox.insert(tk.END, "Unable to connect to hexapod.\n Error: " + str(e) + "\n")
 
@@ -128,6 +131,38 @@ class HexapodTab:
             if direction in self.remaining_labels:
                 self.remaining_labels[direction].config(text=f"{value:.2f} mm")
 
+    def _sync_translation_from_hardware(self):
+        """Refresh translation estimate from live hexapod position when possible."""
+        if not self._is_connected():
+            return False
+        try:
+            position = self.hexapod.get_translation_position()
+        except Exception:
+            return False
+        if not position:
+            return False
+
+        tx, ty, tz = position
+        self.translation_position["up"] = max(-self.AXIS_TRAVEL_LIMIT_MM, min(self.AXIS_TRAVEL_LIMIT_MM, float(tx)))
+        self.translation_position["left"] = max(-self.AXIS_TRAVEL_LIMIT_MM, min(self.AXIS_TRAVEL_LIMIT_MM, float(ty)))
+        self.translation_position["out"] = max(-self.AXIS_TRAVEL_LIMIT_MM, min(self.AXIS_TRAVEL_LIMIT_MM, float(tz)))
+        self._refresh_remaining_travel_ui()
+        return True
+
+    def _schedule_hardware_poll(self):
+        if self.hardware_poll_job is not None:
+            self.parent.after_cancel(self.hardware_poll_job)
+            self.hardware_poll_job = None
+
+        def poll_once():
+            if self._is_connected():
+                self._sync_translation_from_hardware()
+                self.hardware_poll_job = self.parent.after(800, poll_once)
+            else:
+                self.hardware_poll_job = None
+
+        self.hardware_poll_job = self.parent.after(800, poll_once)
+
     def _apply_move_estimate(self, up_delta=0.0, left_delta=0.0, out_delta=0.0):
         self.translation_position["up"] = max(
             -self.AXIS_TRAVEL_LIMIT_MM,
@@ -141,7 +176,8 @@ class HexapodTab:
             -self.AXIS_TRAVEL_LIMIT_MM,
             min(self.AXIS_TRAVEL_LIMIT_MM, self.translation_position["out"] + out_delta),
         )
-        self._refresh_remaining_travel_ui()
+        if not self._sync_translation_from_hardware():
+            self._refresh_remaining_travel_ui()
 
     def home_hexapod(self):
         if not self._is_connected():
@@ -149,7 +185,8 @@ class HexapodTab:
         else:
             response = self.hexapod.home()
             self.hexapodTextbox.insert(tk.END, f"Home: {response}\n")
-            self._reset_translation_estimate()
+            if not self._sync_translation_from_hardware():
+                self._reset_translation_estimate()
 
     def control_on_hexapod(self):
         if not self._is_connected():
@@ -230,4 +267,5 @@ class HexapodTab:
         else:
             response = self.hexapod.resetPosition()
             self.hexapodTextbox.insert(tk.END, f"Reset Position: {response}\n")
-            self._reset_translation_estimate()
+            if not self._sync_translation_from_hardware():
+                self._reset_translation_estimate()

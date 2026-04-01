@@ -3,6 +3,7 @@ import tkinter as tk
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 import numpy as np
+import re
 
 # TODO:
 # - Research the API and how to use it
@@ -35,6 +36,43 @@ class HexapodControl():
         self.ssh_API.connect(ip, verbose, log)
         if self.ssh_API.ssh_obj.connected is True:
             print("Connected to the Hexapod")
+
+    def _parse_state(self, state_str):
+        """Parse STATE output into a key/value dict."""
+        status = {}
+        lines = str(state_str).strip().split('\n')
+        for line in lines:
+            line = line.strip()
+            if not line or '=' not in line:
+                continue
+            key, val = line.split('=', 1)
+            key = key.strip()
+            val = val.strip()
+            try:
+                if re.search(r"[.eE]", val):
+                    status[key] = float(val)
+                else:
+                    status[key] = int(val)
+            except Exception:
+                status[key] = val
+        return status
+
+    def get_translation_position(self):
+        """Return current (tx, ty, tz) in mm when available."""
+        if self.ssh_API is None:
+            return None
+        try:
+            if hasattr(self.ssh_API, "STATE"):
+                raw_state = self.ssh_API.STATE()
+            else:
+                raw_state = self.ssh_API.SendCommand("STATE")
+            status = self._parse_state(raw_state)
+            tx = float(status.get("s_mtp_tx", status.get("s_uto_tx")))
+            ty = float(status.get("s_mtp_ty", status.get("s_uto_ty")))
+            tz = float(status.get("s_mtp_tz", status.get("s_uto_tz")))
+            return tx, ty, tz
+        except Exception:
+            return None
         
 
     def home(self):
