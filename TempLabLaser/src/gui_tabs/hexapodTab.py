@@ -95,7 +95,7 @@ class HexapodTab:
             self.hexapodTextbox.insert(tk.END, "Unable to connect to hexapod.\n Error: " + str(e) + "\n")
 
     def _is_connected(self):
-        return self.hexapod is not None and self.hexapod.ssh_API
+        return self.hexapod is not None and getattr(self.hexapod, "ssh_API", None) is not None
 
     def _parse_step(self):
         try:
@@ -164,6 +164,7 @@ class HexapodTab:
         self.hardware_poll_job = self.parent.after(800, poll_once)
 
     def _apply_move_estimate(self, up_delta=0.0, left_delta=0.0, out_delta=0.0):
+        # Update immediately for operator feedback, then allow hardware sync to correct drift.
         self.translation_position["up"] = max(
             -self.AXIS_TRAVEL_LIMIT_MM,
             min(self.AXIS_TRAVEL_LIMIT_MM, self.translation_position["up"] + up_delta),
@@ -176,8 +177,9 @@ class HexapodTab:
             -self.AXIS_TRAVEL_LIMIT_MM,
             min(self.AXIS_TRAVEL_LIMIT_MM, self.translation_position["out"] + out_delta),
         )
-        if not self._sync_translation_from_hardware():
-            self._refresh_remaining_travel_ui()
+        self._refresh_remaining_travel_ui()
+        # Non-blocking correction from live position when available.
+        self.parent.after(50, self._sync_translation_from_hardware)
 
     def home_hexapod(self):
         if not self._is_connected():
