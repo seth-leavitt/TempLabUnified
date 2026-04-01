@@ -416,6 +416,117 @@ class READMEGenerator:
         import datetime
         self.timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self.save_path = "NA"
+        self.lia_settings = {}
+
+    @staticmethod
+    def _safe_query(instrument, command):
+        """Query an instrument command and return trimmed text or fallback."""
+        if instrument is None:
+            return "Unavailable"
+        try:
+            return str(instrument.query(command)).strip()
+        except Exception:
+            return "Unavailable"
+
+    def _collect_lia_settings(self, lia, instruments):
+        """Collect a broad SR830 settings snapshot for the README."""
+        if lia is None:
+            self.lia_settings = {"Connection": "Unavailable"}
+            return
+
+        input_config_map = {
+            "0": "A",
+            "1": "A-B",
+            "2": "I (1 MOhm)",
+            "3": "I (100 MOhm)",
+        }
+        reserve_mode_map = {
+            "0": "High Reserve",
+            "1": "Normal",
+            "2": "Low Noise",
+        }
+        filter_slope_map = {
+            "0": "6 dB/oct",
+            "1": "12 dB/oct",
+            "2": "18 dB/oct",
+            "3": "24 dB/oct",
+        }
+        ref_source_map = {
+            "0": "External",
+            "1": "Internal",
+        }
+        line_notch_map = {
+            "0": "Off",
+            "1": "Line",
+            "2": "2x Line",
+            "3": "Both",
+        }
+        coupling_map = {"0": "AC", "1": "DC"}
+        shield_map = {"0": "Float", "1": "Ground"}
+        sync_map = {"0": "Off", "1": "On"}
+
+        sample_rate_map = {
+            "0": "62.5 mHz", "1": "125 mHz", "2": "250 mHz", "3": "500 mHz",
+            "4": "1 Hz", "5": "2 Hz", "6": "4 Hz", "7": "8 Hz",
+            "8": "16 Hz", "9": "32 Hz", "10": "64 Hz", "11": "128 Hz",
+            "12": "256 Hz", "13": "512 Hz", "14": "Trigger",
+        }
+
+        sens_code = self._safe_query(lia, "SENS?")
+        tc_code = self._safe_query(lia, "OFLT?")
+
+        sensitivity = "Unavailable"
+        if sens_code.isdigit() and int(sens_code) < len(instruments.sensitivities):
+            sensitivity = instruments.sensitivities[int(sens_code)]
+
+        time_constant = "Unavailable"
+        if tc_code.isdigit() and int(tc_code) < len(instruments.time_constants):
+            time_constant = instruments.time_constants[int(tc_code)]
+
+        input_config_code = self._safe_query(lia, "ISRC?")
+        reserve_code = self._safe_query(lia, "RMOD?")
+        slope_code = self._safe_query(lia, "OFSL?")
+        source_code = self._safe_query(lia, "FMOD?")
+        line_notch_code = self._safe_query(lia, "ILIN?")
+        coupling_code = self._safe_query(lia, "ICPL?")
+        shield_code = self._safe_query(lia, "IGND?")
+        sync_code = self._safe_query(lia, "SYNC?")
+        sample_rate_code = self._safe_query(lia, "SRAT?")
+
+        self.lia_settings = {
+            "Identification": self._safe_query(lia, "*IDN?"),
+            "Reference Source": ref_source_map.get(source_code, source_code),
+            "Reference Frequency (Hz)": self._safe_query(lia, "FREQ?"),
+            "Reference Phase (deg)": self._safe_query(lia, "PHAS?"),
+            "Harmonic": self._safe_query(lia, "HARM?"),
+            "Sine Output Level (V)": self._safe_query(lia, "SLVL?"),
+            "Input Configuration": input_config_map.get(input_config_code, input_config_code),
+            "Input Shield": shield_map.get(shield_code, shield_code),
+            "Input Coupling": coupling_map.get(coupling_code, coupling_code),
+            "Line Notch Filters": line_notch_map.get(line_notch_code, line_notch_code),
+            "Sensitivity": sensitivity,
+            "Reserve Mode": reserve_mode_map.get(reserve_code, reserve_code),
+            "Time Constant": time_constant,
+            "Low Pass Slope": filter_slope_map.get(slope_code, slope_code),
+            "Synchronous Filter": sync_map.get(sync_code, sync_code),
+            "Sample Rate": sample_rate_map.get(sample_rate_code, sample_rate_code),
+            "X Output (V)": self._safe_query(lia, "OUTP? 1"),
+            "Y Output (V)": self._safe_query(lia, "OUTP? 2"),
+            "R Output (V)": self._safe_query(lia, "OUTP? 3"),
+            "Theta Output (deg)": self._safe_query(lia, "OUTP? 4"),
+            "Aux Input 1 (V)": self._safe_query(lia, "OAUX? 1"),
+            "Aux Input 2 (V)": self._safe_query(lia, "OAUX? 2"),
+            "Aux Input 3 (V)": self._safe_query(lia, "OAUX? 3"),
+            "Aux Input 4 (V)": self._safe_query(lia, "OAUX? 4"),
+            "Aux Output 1 (V)": self._safe_query(lia, "AUXV? 1"),
+            "Aux Output 2 (V)": self._safe_query(lia, "AUXV? 2"),
+            "Aux Output 3 (V)": self._safe_query(lia, "AUXV? 3"),
+            "Aux Output 4 (V)": self._safe_query(lia, "AUXV? 4"),
+            "Display CH1 (raw)": self._safe_query(lia, "DDEF? 1"),
+            "Display CH2 (raw)": self._safe_query(lia, "DDEF? 2"),
+            "Data Transfer Interface": self._safe_query(lia, "OUTX?"),
+            "Remote Override": self._safe_query(lia, "OVRM?"),
+        }
 
     def extra_info_pop_up(self, parent):
         from tkinter import ttk
@@ -467,6 +578,7 @@ class READMEGenerator:
         self.highest_freq = laser_gui.freqFinalInput.get()
         self.freq_mode = laser_gui.spacing_selector_var.get()
         lia = getattr(laser_gui.instruments, "lia", None)
+        self._collect_lia_settings(lia, laser_gui.instruments)
         if lia is not None:
             try:
                 self.lia_time_constant = str(lia.query("OFLT?"))
@@ -482,6 +594,8 @@ class READMEGenerator:
     def generate_readme(self, file_location):
         print("Collecting information for README...")
         print("Generating README...")
+        lia_lines = "\n".join([f"{key}: {value}" for key, value in self.lia_settings.items()])
+
         readMe = f"""
 ############################################################
 #                    MEASUREMENT README                    #
@@ -519,6 +633,11 @@ Log or Linear:           {self.freq_mode}
 LIA Time Constant:       {self.lia_time_constant}
 LIA Sensitivity:         {self.lia_sensitivity}
 PhotoDiode Gain:         {self.photodiode_gain}
+
+---------------------------
+LOCK-IN AMPLIFIER SNAPSHOT (SR830)
+---------------------------
+{lia_lines}
 
 ############################################################
 #                   END OF MEASUREMENT FILE                #
